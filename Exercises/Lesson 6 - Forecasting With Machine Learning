@@ -1,0 +1,312 @@
+<Introduction>
+Run this cell to set everything up!
+
+****************
+# Setup feedback system
+from learntools.core import binder
+binder.bind(globals())
+from learntools.time_series.ex6 import *
+
+# Setup notebook
+from pathlib import Path
+import ipywidgets as widgets
+from learntools.time_series.style import *  # plot style settings
+from learntools.time_series.utils import (create_multistep_example,
+                                          load_multistep_data,
+                                          make_lags,
+                                          make_multistep_target,
+                                          plot_multistep)
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.multioutput import RegressorChain
+from sklearn.preprocessing import LabelEncoder
+from xgboost import XGBRegressor
+
+comp_dir = Path('../input/store-sales-time-series-forecasting')
+
+store_sales = pd.read_csv(
+    comp_dir / 'train.csv',
+    usecols=['store_nbr', 'family', 'date', 'sales', 'onpromotion'],
+    dtype={
+        'store_nbr': 'category',
+        'family': 'category',
+        'sales': 'float32',
+        'onpromotion': 'uint32',
+    },
+    parse_dates=['date'],
+    infer_datetime_format=True,
+)
+store_sales['date'] = store_sales.date.dt.to_period('D')
+store_sales = store_sales.set_index(['store_nbr', 'family', 'date']).sort_index()
+
+family_sales = (
+    store_sales
+    .groupby(['family', 'date'])
+    .mean()
+    .unstack('family')
+    .loc['2017']
+)
+
+test = pd.read_csv(
+    comp_dir / 'test.csv',
+    dtype={
+        'store_nbr': 'category',
+        'family': 'category',
+        'onpromotion': 'uint32',
+    },
+    parse_dates=['date'],
+    infer_datetime_format=True,
+)
+test['date'] = test.date.dt.to_period('D')
+test = test.set_index(['store_nbr', 'family', 'date']).sort_index()
+
+/opt/conda/lib/python3.10/site-packages/learntools/time_series/checking_utils.py:16: FutureWarning:
+The argument 'infer_datetime_format' is deprecated and will be removed in a future version. A strict version of it is now the default, see https://pandas.pydata.org/pdeps/0004-consistent
+-to-datetime-parsing.html. You can safely remove this argument.
+  store_sales = pd.read_csv(
+/opt/conda/lib/python3.10/site-packages/learntools/time_series/checking_utils.py:36: FutureWarning:
+The default of observed=False is deprecated and will be changed to True in a future version of pandas. Pass observed=False to retain current behavior or observed=True to adopt the future
+default and silence this warning.
+  .groupby(['family', 'date'])  #
+****************
+
+Consider the following three forecasting tasks:
+a. 3-step forecast using 4 lag features with a 2-step lead time
+b. 1-step forecast using 3 lag features with a 1-step lead time
+c. 3-step forecast using 4 lag features with a 1-step lead time
+
+Run the next cell to see three datasets, each representing one of the tasks above.
+
+****************
+datasets = load_multistep_data()
+
+data_tabs = widgets.Tab([widgets.Output() for _ in enumerate(datasets)])
+for i, df in enumerate(datasets):
+    data_tabs.set_title(i, f'Dataset {i+1}')
+    with data_tabs.children[i]:
+        display(df)
+
+display(data_tabs)
+****************
+
+<1st step: Match description to dataset>
+Can you match each task to the appropriate dataset?
+
+****************
+# YOUR CODE HERE: Match the task to the dataset. Answer 1, 2, or 3.
+task_a = 2
+task_b = 1
+task_c = 3
+​
+# Check your answer
+q_1.check()
+
+Correct
+
+# Lines below will give you a hint or solution code
+q_1.hint()
+q_1.solution()
+
+Hint:
+The number of forecasting steps is the number of columns under Targets. The number of lags is the number of columns under Features. The lead time is the smallest lag step possible.
+
+Solution:
+task_a = 2
+task_b = 1
+task_c = 3
+****************
+
+Look at the time indexes of the training and test sets. From this information, can you identify the forecasting task for Store Sales?
+
+****************
+print("Training Data", "\n" + "-" * 13 + "\n", store_sales)
+print("\n")
+print("Test Data", "\n" + "-" * 9 + "\n", test)
+
+Training Data 
+-------------
+                                      sales  onpromotion
+store_nbr family     date                              
+1         AUTOMOTIVE 2013-01-01   0.000000            0
+                     2013-01-02   2.000000            0
+                     2013-01-03   3.000000            0
+                     2013-01-04   3.000000            0
+                     2013-01-05   5.000000            0
+...                                    ...          ...
+9         SEAFOOD    2017-08-11  23.830999            0
+                     2017-08-12  16.859001            4
+                     2017-08-13  20.000000            0
+                     2017-08-14  17.000000            0
+                     2017-08-15  16.000000            0
+
+[3000888 rows x 2 columns]
+
+
+Test Data 
+---------
+                                       id  onpromotion
+store_nbr family     date                            
+1         AUTOMOTIVE 2017-08-16  3000888            0
+                     2017-08-17  3002670            0
+                     2017-08-18  3004452            0
+                     2017-08-19  3006234            0
+                     2017-08-20  3008016            0
+...                                  ...          ...
+9         SEAFOOD    2017-08-27  3022271            0
+                     2017-08-28  3024053            0
+                     2017-08-29  3025835            0
+                     2017-08-30  3027617            0
+                     2017-08-31  3029399            0
+
+[28512 rows x 2 columns]
+****************
+
+<2nd step: Identify the forecasting task for Store Sales competition>
+Try to identify the forecast origin and the forecast horizon. How many steps are within the forecast horizon? What is the lead time for the forecast?
+Run this cell after you've thought about your answer.
+
+****************
+# View the solution (Run this cell to receive credit!)
+q_2.check()
+
+Correct:
+The training set ends on 2017-08-15, which gives us the forecast origin. The test set comprises the dates 2017-08-16 to 2017-08-31, and this gives us the forecast horizon. There is one
+step between the origin and horizon, so we have a lead time of one day. Put another way, we need a 16-step forecast with a 1-step lead time. We can use lags starting with lag 1, and we
+make the entire 16-step forecast using features from 2017-08-15.
+****************
+
+In the tutorial, we saw how to create a multistep dataset for a single time series. Fortunately, we can use exactly the same procedure for datasets of multiple series.
+
+<3rd step: Create multistep dataset for Store Sales>
+Create targets suitable for the Store Sales forecasting task. Use 4 days of lag features. Drop any missing values from both targets and features.
+
+****************
+# YOUR CODE HERE
+y = family_sales.loc[:, 'sales']
+​
+# YOUR CODE HERE: Make 4 lag features
+X = make_lags(y, lags=4).dropna()
+​
+# YOUR CODE HERE: Make multistep target
+y = make_multistep_target(y, steps=16).dropna()
+​
+y, X = y.align(X, join='inner', axis=0)
+​
+# Check your answer
+q_3.check()
+
+Correct
+
+# Lines below will give you a hint or solution code
+q_3.hint()
+q_3.solution()
+
+Hint:
+Your solution should look like:
+y = family_sales.loc[:, 'sales']
+
+X = make_lags(____, lags=____).dropna()
+
+y = make_multistep_target(____, steps=____).dropna()
+
+y, X = y.align(X, join='inner', axis=0)
+
+Solution:
+y = family_sales.loc[:, 'sales']
+
+X = make_lags(y, lags=4).dropna()
+
+y = make_multistep_target(y, steps=16).dropna()
+
+y, X = y.align(X, join='inner', axis=0)
+****************
+
+In the tutorial, we saw how to forecast with the MultiOutput and Direct strategies on the Flu Trends series. Now, you'll apply the DirRec strategy to the multiple time series of Store
+Sales. Make sure you've successfully completed the previous exercise and then run this cell to prepare the data for XGBoost.
+
+****************
+le = LabelEncoder()
+X = (X
+    .stack('family')  # wide to long
+    .reset_index('family')  # convert index to column
+    .assign(family=lambda x: le.fit_transform(x.family))  # label encode
+)
+y = y.stack('family')  # wide to long
+
+display(y)
+
+y_step_1	y_step_2	y_step_3	y_step_4	y_step_5	y_step_6	y_step_7	y_step_8	y_step_9	y_step_10	y_step_11	y_step_12	y_step_13	y_step_14	y_step_15	y_step_16
+date	family																
+2017-01-05	AUTOMOTIVE	6.333333	6.018518	10.259259	9.388889	5.944445	4.777778	6.314815	5.388889	5.240741	8.500000	10.259259	6.407407	5.685185	5.703704	4.777778	5.148148
+BABY CARE	0.351852	0.277778	0.259259	0.240741	0.444444	0.240741	0.277778	0.296296	0.296296	0.388889	0.425926	0.314815	0.166667	0.222222	0.129630	0.166667
+BEAUTY	5.925926	6.518518	10.037037	11.611111	5.648148	6.500000	5.277778	4.370370	4.703704	7.777778	9.037037	5.648148	5.351852	4.740741	3.981482	4.592593
+BEVERAGES	3258.796387	3507.277832	4848.518555	5503.647949	3448.203613	3171.740723	3046.870361	2693.722168	3226.037109	4667.296387	5580.611328	3700.370361	3409.796387	3263.462891	2676.573975	3003.555664
+BOOKS	0.407407	0.537037	0.481481	0.722222	0.500000	0.518519	0.481481	0.388889	0.444444	0.574074	0.555556	0.388889	0.500000	0.407407	0.277778	0.351852
+...	...	...	...	...	...	...	...	...	...	...	...	...	...	...	...	...	...
+2017-07-31	POULTRY	364.955658	403.601349	377.313995	316.436096	533.497009	416.454041	464.596558	344.051758	313.780884	305.270233	278.819885	468.857391	354.342773	379.801208	344.398285	325.679840
+PREPARED FOODS	84.698647	87.836800	88.735970	77.172997	91.886765	100.384964	102.248146	86.627441	77.344131	84.796539	78.791443	96.286926	84.693810	91.509422	86.062500	85.954132
+PRODUCE	2257.140625	2609.180176	3122.895752	1792.220947	2079.319336	2418.970215	2675.105957	2111.133301	2168.535400	2663.076416	1670.264893	2198.854492	2070.154541	2331.922363	2134.399902	2316.832764
+SCHOOL AND OFFICE SUPPLIES	30.111111	49.333332	57.481480	51.907406	63.222221	85.203705	100.277779	64.407410	59.759258	53.740742	42.962963	65.240738	67.481483	68.851852	52.333332	46.851852
+SEAFOOD	20.488333	20.346851	20.801037	17.116297	25.553965	24.209518	23.512852	18.419851	18.481131	18.181425	13.284463	23.566963	19.037594	20.704575	17.975555	17.966240
+6864 rows × 16 columns
+****************
+
+<4th step: Forecast with the DirRec strategy>
+Instatiate a model that applies the DirRec strategy to XGBoost.
+
+****************
+from sklearn.multioutput import RegressorChain
+​
+# YOUR CODE HERE
+model = RegressorChain(base_estimator=XGBRegressor())
+​
+# Check your answer
+q_4.check()
+
+Correct
+
+# Lines below will give you a hint or solution code
+q_4.hint()
+q_4.solution()
+
+Hint:
+Your solution should look like:
+from sklearn.multioutput import RegressorChain
+
+model = RegressorChain(base_estimator=____())
+
+Solution:
+from sklearn.multioutput import RegressorChain
+
+model = RegressorChain(base_estimator=XGBRegressor())
+****************
+
+Run this cell if you'd like to train this model.
+
+****************
+model.fit(X, y)
+
+y_pred = pd.DataFrame(
+    model.predict(X),
+    index=y.index,
+    columns=y.columns,
+).clip(0.0)
+****************
+
+And use this code to see a sample of the 16-step predictions this model makes on the training data.
+
+****************
+FAMILY = 'BEAUTY'
+START = '2017-04-01'
+EVERY = 16
+
+y_pred_ = y_pred.xs(FAMILY, level='family', axis=0).loc[START:]
+y_ = family_sales.loc[START:, 'sales'].loc[:, FAMILY]
+
+fig, ax = plt.subplots(1, 1, figsize=(11, 4))
+ax = y_.plot(**plot_params, ax=ax, alpha=0.5)
+ax = plot_multistep(y_pred_, ax=ax, every=EVERY)
+_ = ax.legend([FAMILY, FAMILY + ' Forecast'])
+****************
